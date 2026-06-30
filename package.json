@@ -2,6 +2,7 @@
   "name": "xss-csrf-demo",
   "version": "1.0.0",
   "dependencies": {
+    "dompurify": "^3.4.11",
     "express": "^4.18.0"
   }
 }

