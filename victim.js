@@ -101,6 +101,25 @@ app.post('/transfer', (req, res) => {
   res.redirect('/')
 })
 
+// GET送金エンドポイント（意図的に脆弱 — GETナビゲーションCSRFデモ用）
+app.get('/transfer-get', (req, res) => {
+  const session = getSession(req)
+  if (!session) {
+    return res.send(`
+      <div style="padding:60px;font-family:sans-serif;text-align:center">
+        <h2 style="color:#27ae60">✅ SameSite=strict が効いています</h2>
+        <p>リンクからの遷移にもCookieが付きませんでした。未ログイン扱いで攻撃失敗。</p>
+        <a href="/">戻る</a>
+      </div>`)
+  }
+  const { to, amount } = req.query
+  const amt = parseInt(amount) || 0
+  session.balance -= amt
+  session._flash = { type: 'danger', msg: `¥${amt.toLocaleString()} が ${to} に送金されました（GETリンクCSRF成功 — Lax は防げない）` }
+  session.log.push(`💸 GET送金 → ${to} へ ¥${amt}`)
+  res.redirect('/')
+})
+
 app.post('/comments', (req, res) => {
   comments.push(req.body.comment || '')
   res.redirect('/')
@@ -258,7 +277,7 @@ function dashboard(session, flash, nonce) {
           <div>SameSite Cookie</div>
           <div class="row-note">${sameSite === 'strict'
             ? '✅ strict — 別サイトからのリクエストにCookieを付けない。未ログイン扱いになる'
-            : '⚠️ lax — GETリンク遷移にはCookieを付ける。fetch/POSTには付けない'}</div>
+            : '⚠️ lax — POST/fetchはブロックするがリンク遷移（GET）にはCookieを送る → attacker.localのGETリンクCSRFが通る'}</div>
         </div>
         <span class="${sameSite === 'strict' ? 'tag-on' : 'tag-off'}">${sameSite}</span>
         <a href="/toggle-samesite" class="btn-sm">切り替え（再ログイン）</a>

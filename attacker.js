@@ -69,6 +69,58 @@ function attackerPage() {
   </div>
 
   <div class="card">
+    <h3>SameSite: Lax と Strict の違い</h3>
+    <p>Lax は <strong>POST / fetch をブロック</strong>するが、<strong>リンクからのGET遷移はCookieを送る</strong>。Strict は両方ブロック。</p>
+
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin:12px 0">
+      <tr style="background:#0f3460">
+        <th style="padding:8px;text-align:left">リクエスト種別</th>
+        <th style="padding:8px;text-align:center">Lax</th>
+        <th style="padding:8px;text-align:center">Strict</th>
+      </tr>
+      <tr style="border-bottom:1px solid #ffffff11">
+        <td style="padding:8px">リンクをクリック（GET遷移）</td>
+        <td style="padding:8px;text-align:center;color:#e74c3c">❌ Cookie送る</td>
+        <td style="padding:8px;text-align:center;color:#2ecc71">✅ 送らない</td>
+      </tr>
+      <tr style="border-bottom:1px solid #ffffff11">
+        <td style="padding:8px">img src / fetch</td>
+        <td style="padding:8px;text-align:center;color:#2ecc71">✅ 送らない</td>
+        <td style="padding:8px;text-align:center;color:#2ecc71">✅ 送らない</td>
+      </tr>
+      <tr>
+        <td style="padding:8px">フォーム POST</td>
+        <td style="padding:8px;text-align:center;color:#2ecc71">✅ 送らない</td>
+        <td style="padding:8px;text-align:center;color:#2ecc71">✅ 送らない</td>
+      </tr>
+    </table>
+
+    <hr style="border-color:#ffffff11">
+
+    <p style="margin-bottom:6px"><strong>Attack: GETリンク経由のCSRF（Lax では通る）</strong></p>
+    <p>被害者にこのリンクをクリックさせると、bank.local への送金が発火します。</p>
+    <div class="note" style="margin:8px 0">
+      Lax の場合：リンク遷移なのでCookieが送られる → 送金成功<br>
+      Strict の場合：Cookie送られない → 未ログイン扱い → 攻撃失敗
+    </div>
+    <a href="http://bank.local:3000/transfer-get?to=attacker&amount=2000" class="btn" style="background:#e74c3c;margin-top:8px">
+      🎁 お得な情報はこちら（実際は送金リンク）
+    </a>
+
+    <hr style="border-color:#ffffff11;margin:16px 0">
+
+    <p style="margin-bottom:6px"><strong>Link navigation（Strict では未ログイン扱いになる）</strong></p>
+    <p>bank.local へのリンクをたどったとき、ログイン状態が維持されるかを確認する。</p>
+    <a href="http://bank.local:3000/" target="_blank" class="btn btn-safe" style="margin-top:8px">
+      🏦 bank.local を開く
+    </a>
+    <div class="note" style="margin-top:8px">
+      Lax：ログイン状態で開く（Cookieが送られる）<br>
+      Strict：ログアウト状態で開く（再ログインが必要）
+    </div>
+  </div>
+
+  <div class="card">
     <h3>おまけ：XSS との違い</h3>
     <p>CSRF は Cookie を「盗まない」。ブラウザが自動付与するだけ。</p>
     <p>XSS は Cookie や localStorage を「盗む」。デモは <a href="http://bank.local:3000/comments" target="_blank" style="color:#5dade2">コメント掲示板</a> で確認できる。</p>
