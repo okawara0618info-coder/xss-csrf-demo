@@ -1,4 +1,4 @@
-// bank.example.com の代わり（port 3000）
+// bank.local:3000
 const express = require('express')
 const crypto = require('crypto')
 
@@ -196,7 +196,7 @@ function dashboard(session) {
   <a href="/logout" class="btn btn-sm" style="margin-left:8px">ログアウト</a>
 </div>
 <div class="footer-bar">
-  CSRFを試すには → <a href="http://localhost:3001" target="_blank">localhost:3001（攻撃者サイト）</a> を開く
+  CSRFを試すには → <a href="http://attacker.local:3001" target="_blank">attacker.local:3001（攻撃者サイト）</a> を開く
 </div>
 </body></html>`
 }
