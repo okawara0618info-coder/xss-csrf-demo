@@ -160,7 +160,57 @@ SameSite は脆弱性①（Cookie の自動付与）を塞ぎ、CSRFトークン
 
 ## 【デモ】
 
-デモを用意しています。bank.local と attacker.local の2つのサーバーを立てて、対策を ON/OFF しながら攻撃の成否を確認できます。クローンして試してみてください。
+デモを用意しています。bank.local と attacker.local の2つのサーバーを立てて、対策を ON/OFF しながら攻撃の成否を確認できます。
+
+### 事前準備
+
+- ブラウザで bank.local:3000 と attacker.local:3001 を別タブで開いておく
+- bank.local にログイン（パスワード: pass）
+- 対策パネルの全項目が OFF になっていることを確認
+
+---
+
+### XSS デモ
+
+**① Cookie 盗取（全部 OFF の状態）**
+
+bank.local をリロードする。attacker.local の監視ログに `session=xxxxx` が表示される。「ページを開いただけで Cookie が盗まれた」状態。
+
+**② XSS保護 ON にする**
+
+bank.local の対策パネルで DOMPurify を ON → リロード。今度はログに何も届かない。DOMPurify が `onerror` を除去したため発火しない。
+
+**③ XSS保護を OFF に戻して CSP を ON にする**
+
+リロード。今度もログに届かない。スクリプトは混入しているが、CSP がブラウザ側でブロックしている。
+
+**④ CSP も OFF に戻して HttpOnly を ON にする**
+
+再ログインが必要になる。ログイン後リロード。今度はログに `Cookie: 空（HttpOnly）` と表示される。XSS は発火しているが Cookie が読めない状態。
+
+---
+
+### CSRF デモ
+
+**⑤ 全部 OFF に戻してログインし直す**
+
+残高が ¥10,000 であることを確認。
+
+**⑥ attacker.local で「プレゼントを受け取る」を押す**
+
+bank.local に戻ると残高が ¥7,000 に減っている。「別サイトのボタンを押しただけで送金された」状態。
+
+**⑦ CSRFトークン ON にして同じ操作をする**
+
+attacker.local でボタンを押す → bank.local に「CSRFトークン不一致でブロック」と表示される。残高は変わらない。
+
+**⑧ CSRFトークン OFF に戻して SameSite を Lax にする**
+
+再ログインが必要になる。「お得な情報はこちら」リンク（GET リクエスト）を押すと送金が通る。POST の「プレゼントを受け取る」はブロックされる。
+
+**⑨ SameSite を Strict にする**
+
+再ログインが必要になる。attacker.local から bank.local へのリンク遷移で Cookie が付かず、未ログイン扱いになる。
 
 ---
 
